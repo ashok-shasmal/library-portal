@@ -1,0 +1,48 @@
+version: '3.8'
+
+services:
+  # 1. The Postgres Database Service
+  postgres_db:
+    image: postgres:16-alpine
+    container_name: library_postgres
+    networks:
+      - library_network
+    environment:
+      POSTGRES_USER: ashok
+      POSTGRES_PASSWORD: ashok123!
+      POSTGRES_DB: library_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ashok -d library_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # 2. Your Go Application Service
+  go_app:
+    build: .
+    container_name: library_app
+    networks:
+      - library_network
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres_db:
+        condition: service_healthy
+    environment:
+      - DB_HOST=postgres_db
+      - DB_PORT=5432
+      - DB_USER=ashok
+      - DB_PASSWORD=ashok123!
+      - DB_NAME=library_db
+
+volumes:
+  pgdata: # This ensures your data isn't deleted when the container stops
+
+networks:
+  library_network:
+    driver: bridge

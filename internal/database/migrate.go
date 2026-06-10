@@ -4,27 +4,51 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"time"
 
 	_ "github.com/lib/pq"
 )
 
-// ConnectDB opens a Postgres connection and verifies it.
+// ConnectDB opens a Postgres connection and verifies it with retry logic.
+// It attempts to connect up to 30 times with exponential backoff.
 func ConnectDB(conn string) (*sql.DB, error) {
-	db, err := sql.Open("postgres", conn)
-	if err != nil {
-		return nil, fmt.Errorf("open db: %w", err)
-	}
+	maxRetries := 30
+	baseDelay := time.Second
+	maxDelay := 10 * time.Second
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	var db *sql.DB
+	var err error
 
-	if err := db.PingContext(ctx); err != nil {
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		db, err = sql.Open("postgres", conn)
+		if err != nil {
+			return nil, fmt.Errorf("open db: %w", err)
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		pingErr := db.PingContext(ctx)
+		cancel()
+
+		if pingErr == nil {
+			log.Printf("Successfully connected to database after %d attempt(s)", attempt+1)
+			return db, nil
+		}
+
 		db.Close()
-		return nil, fmt.Errorf("ping db: %w", err)
+
+		if attempt < maxRetries-1 {
+			// Calculate backoff with exponential increase: 1s, 2s, 4s, 8s, up to 10s
+			delay := baseDelay * time.Duration(1<<uint(attempt))
+			if delay > maxDelay {
+				delay = maxDelay
+			}
+			log.Printf("Database connection failed (attempt %d/%d): %v. Retrying in %v...", attempt+1, maxRetries, pingErr, delay)
+			time.Sleep(delay)
+		}
 	}
 
-	return db, nil
+	return nil, fmt.Errorf("failed to connect to database after %d attempts: %w", maxRetries, err)
 }
 
 // Migrate creates the necessary tables for the library portal.
