@@ -52,11 +52,20 @@ spec:
           image: postgres:16-alpine
           env:
             - name: POSTGRES_USER
-              value: "ashok"
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: POSTGRES_USER
             - name: POSTGRES_PASSWORD
-              value: "ashok123!"
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: POSTGRES_PASSWORD
             - name: POSTGRES_DB
-              value: "library_db"
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: POSTGRES_DB
             - name: PGDATA
               value: "/var/lib/postgresql/data/pgdata"
           ports:
@@ -67,7 +76,7 @@ spec:
               command:
                 - sh
                 - -c
-                - pg_isready -U ashok -d library_db
+                - pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"
             initialDelaySeconds: 10
             periodSeconds: 10
             timeoutSeconds: 5

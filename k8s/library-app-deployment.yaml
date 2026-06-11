@@ -19,7 +19,7 @@ metadata:
   labels:
     app: library-app
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: library-app
@@ -46,11 +46,20 @@ spec:
             - name: DB_PORT
               value: "5432"
             - name: DB_USER
-              value: "ashok"
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: POSTGRES_USER
             - name: DB_PASSWORD
-              value: "ashok123!"
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: POSTGRES_PASSWORD
             - name: DB_NAME
-              value: "library_db"
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: POSTGRES_DB
             - name: POD_NAME
               valueFrom:
                 fieldRef:
