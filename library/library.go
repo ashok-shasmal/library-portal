@@ -1,4 +1,4 @@
-package internal
+package library
 
 import (
 	"log"
@@ -48,7 +48,6 @@ func (l *library) InitDB() {
 	if err != nil {
 		log.Fatalf("db: %v", err)
 	}
-	defer db.Close()
 
 	l.store = database.NewStore(db)
 }

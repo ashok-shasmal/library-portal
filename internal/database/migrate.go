@@ -28,7 +28,7 @@ func ConnectDB(conn string) (*sql.DB, error) {
 
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		pingErr := db.PingContext(ctx)
-		cancel()
+		defer cancel()
 
 		if pingErr == nil {
 			log.Printf("Successfully connected to database after %d attempt(s)", attempt+1)

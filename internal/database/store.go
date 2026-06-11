@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/ashok-shasmal/library-portal/internal/models"
@@ -20,6 +21,7 @@ func NewStore(db *sql.DB) *Store {
 
 // --- Users ---
 func (s *Store) CreateUser(ctx context.Context, u *models.User) error {
+	log.Printf("Creating user: %s (%s)", u.Name, u.Email) // Debug log
 	ctx, cancel := context.WithTimeout(ctx, s.Timeout)
 	defer cancel()
 
@@ -28,7 +30,12 @@ func (s *Store) CreateUser(ctx context.Context, u *models.User) error {
 	}
 
 	query := `INSERT INTO users (name, email, password, balance, created_at) VALUES ($1,$2,$3,$4,$5) RETURNING id`
-	return s.DB.QueryRowContext(ctx, query, u.Name, u.Email, u.Password, u.Balance, u.CreatedAt).Scan(&u.ID)
+	if err := s.DB.QueryRowContext(ctx, query, u.Name, u.Email, u.Password, u.Balance, u.CreatedAt).Scan(&u.ID); err != nil {
+		log.Printf("Error creating user: %v", err.Error()) // Debug log
+		return err
+	}
+	log.Printf("User created with ID: %d", u.ID) // Debug log
+	return nil
 }
 
 func (s *Store) GetUserByID(ctx context.Context, id int) (*models.User, error) {
