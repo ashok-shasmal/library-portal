@@ -39,4 +39,8 @@ echo "Waiting for library-app pods to be ready..."
 kubectl wait --for=condition=ready pod -l app=library-app --timeout=240s
 
 echo "Starting port-forward to localhost:8080..."
-exec kubectl port-forward svc/library-app 8080:8080
+exec kubectl port-forward svc/library-app 8080:8080 --address 127.0.0.1
+
+
+sleep(1m)
+exit()
