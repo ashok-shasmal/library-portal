@@ -12,7 +12,7 @@ import (
 	"github.com/ashok-shasmal/library-portal/internal/auth"
 	"github.com/ashok-shasmal/library-portal/internal/database"
 	"github.com/ashok-shasmal/library-portal/internal/handlers"
-	"github.com/ashok-shasmal/library-portal/internal/models"
+	"github.com/ashok-shasmal/library-portal/internal/pb"
 )
 
 type Server struct {
@@ -27,6 +27,9 @@ func New(store *database.Store, addr string) *Server {
 
 func (s *Server) ListenAndServe() error {
 	mux := http.NewServeMux()
+
+	//Welcome Message
+	mux.HandleFunc("/", s.welcome)
 
 	// Auth handlers
 	authH := &handlers.AuthHandler{Store: s.Store, TokenExpiry: 24 * time.Hour}
@@ -65,6 +68,17 @@ func writeJSON(w http.ResponseWriter, v interface{}) {
 	json.NewEncoder(w).Encode(v)
 }
 
+func scrubUserPassword(u *pb.User) {
+	if u != nil {
+		u.Password = ""
+	}
+}
+
+// -- Welcome ---
+func (s *Server) welcome(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, "!!! Welocome to my Library !!! ")
+}
+
 // --- Users handlers ---
 func (s *Server) usersHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("usersHandler start: %s %s", r.Method, r.URL.Path)
@@ -78,6 +92,9 @@ func (s *Server) usersHandler(w http.ResponseWriter, r *http.Request) {
 				log.Printf("usersHandler GET ListUsers error: %v", err)
 				http.Error(w, "server error", http.StatusInternalServerError)
 				return
+			}
+			for i := range users {
+				scrubUserPassword(&users[i])
 			}
 			log.Printf("usersHandler GET returning %d users", len(users))
 			writeJSON(w, users)
@@ -117,18 +134,19 @@ func (s *Server) userByIDHandler(w http.ResponseWriter, r *http.Request) {
 				http.NotFound(w, r)
 				return
 			}
+			scrubUserPassword(u)
 			writeJSON(w, u)
 		})).ServeHTTP(w, r)
 	case http.MethodPut:
 		log.Printf("userByIDHandler PUT id=%d", id)
 		auth.JWTMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			var u models.User
+			var u pb.User
 			if err := json.NewDecoder(r.Body).Decode(&u); err != nil {
 				log.Printf("userByIDHandler PUT decode error: %v", err)
 				http.Error(w, "bad request", http.StatusBadRequest)
 				return
 			}
-			u.ID = id
+			u.Id = int32(id)
 			if err := s.Store.UpdateUser(r.Context(), &u); err != nil {
 				log.Printf("userByIDHandler PUT UpdateUser error id=%d: %v", id, err)
 				http.Error(w, "server error", http.StatusInternalServerError)
@@ -171,7 +189,7 @@ func (s *Server) booksHandler(w http.ResponseWriter, r *http.Request) {
 		log.Printf("booksHandler POST request")
 		// create book - protected
 		auth.JWTMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			var b models.Book
+			var b pb.Book
 			if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
 				log.Printf("booksHandler POST decode error: %v", err)
 				http.Error(w, "bad request", http.StatusBadRequest)
@@ -182,7 +200,7 @@ func (s *Server) booksHandler(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "server error", http.StatusInternalServerError)
 				return
 			}
-			log.Printf("booksHandler POST created book id=%d title=%s", b.ID, b.Title)
+			log.Printf("booksHandler POST created book id=%d title=%s", b.Id, b.Title)
 			writeJSON(w, b)
 		})).ServeHTTP(w, r)
 	default:
@@ -213,12 +231,12 @@ func (s *Server) bookByIDHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, b)
 	case http.MethodPut:
 		auth.JWTMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			var b models.Book
+			var b pb.Book
 			if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
 				http.Error(w, "bad request", http.StatusBadRequest)
 				return
 			}
-			b.ID = id
+			b.Id = int32(id)
 			if err := s.Store.UpdateBook(r.Context(), &b); err != nil {
 				http.Error(w, "server error", http.StatusInternalServerError)
 				return
@@ -272,7 +290,7 @@ func (s *Server) borrowRecordsHandler(w http.ResponseWriter, r *http.Request) {
 		log.Printf("borrowRecordsHandler POST request")
 		// create borrow record - protected
 		auth.JWTMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			var rec models.BorrowRecord
+			var rec pb.BorrowRecord
 			if err := json.NewDecoder(r.Body).Decode(&rec); err != nil {
 				log.Printf("borrowRecordsHandler POST decode error: %v", err)
 				http.Error(w, "bad request", http.StatusBadRequest)
@@ -283,7 +301,7 @@ func (s *Server) borrowRecordsHandler(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "server error", http.StatusInternalServerError)
 				return
 			}
-			log.Printf("borrowRecordsHandler POST created record id=%d user_id=%d book_id=%d", rec.ID, rec.UserID, rec.BookID)
+			log.Printf("borrowRecordsHandler POST created record id=%d user_id=%d book_id=%d", rec.Id, rec.UserId, rec.BookId)
 			writeJSON(w, rec)
 		})).ServeHTTP(w, r)
 	default:
@@ -312,12 +330,12 @@ func (s *Server) borrowRecordByIDHandler(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, rec)
 	case http.MethodPut:
 		auth.JWTMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			var rec models.BorrowRecord
+			var rec pb.BorrowRecord
 			if err := json.NewDecoder(r.Body).Decode(&rec); err != nil {
 				http.Error(w, "bad request", http.StatusBadRequest)
 				return
 			}
-			rec.ID = id
+			rec.Id = int32(id)
 			if err := s.Store.UpdateBorrowRecord(r.Context(), &rec); err != nil {
 				http.Error(w, "server error", http.StatusInternalServerError)
 				return

@@ -8,8 +8,9 @@ import (
 
 	"github.com/ashok-shasmal/library-portal/internal/auth"
 	"github.com/ashok-shasmal/library-portal/internal/database"
-	"github.com/ashok-shasmal/library-portal/internal/models"
+	"github.com/ashok-shasmal/library-portal/internal/pb"
 	"golang.org/x/crypto/bcrypt"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type AuthHandler struct {
@@ -43,11 +44,11 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	u := &models.User{
+	u := &pb.User{
 		Name:      req.Name,
 		Email:     req.Email,
 		Password:  string(hashed),
-		CreatedAt: time.Now(),
+		CreatedAt: timestamppb.New(time.Now()),
 	}
 
 	if err := h.Store.CreateUser(context.Background(), u); err != nil {
@@ -55,14 +56,14 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := auth.GenerateToken(u.ID, h.TokenExpiry)
+	token, err := auth.GenerateToken(int(u.Id), h.TokenExpiry)
 	if err != nil {
 		http.Error(w, "could not generate token", http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(authResp{ID: u.ID, Name: u.Name, Email: u.Email, Token: token})
+	json.NewEncoder(w).Encode(authResp{ID: int(u.Id), Name: u.Name, Email: u.Email, Token: token})
 }
 
 type loginReq struct {
@@ -92,12 +93,12 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := auth.GenerateToken(u.ID, h.TokenExpiry)
+	token, err := auth.GenerateToken(int(u.Id), h.TokenExpiry)
 	if err != nil {
 		http.Error(w, "could not generate token", http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(authResp{ID: u.ID, Name: u.Name, Email: u.Email, Token: token})
+	json.NewEncoder(w).Encode(authResp{ID: int(u.Id), Name: u.Name, Email: u.Email, Token: token})
 }

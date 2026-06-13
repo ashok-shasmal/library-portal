@@ -8,3 +8,5 @@ require (
 )
 
 require golang.org/x/crypto v0.53.0
+
+require google.golang.org/protobuf v1.30.0
