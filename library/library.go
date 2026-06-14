@@ -1,6 +1,7 @@
 package library
 
 import (
+	"io"
 	"log"
 	"os"
 
@@ -55,4 +56,22 @@ func (l *library) InitDB() {
 func (l *library) InitServer() {
 	l.srv = server.New(l.store, ":8080")
 	log.Fatal(l.srv.ListenAndServe())
+}
+
+func (l *library) InitLogger() *os.File {
+	logFile, err := os.OpenFile("/var/log/app.log",
+		os.O_CREATE|os.O_WRONLY|os.O_APPEND,
+		0644)
+	if err != nil {
+		log.Fatalf("failed to open log file: %v", err)
+	}
+
+	// Write logs to both stdout and file
+	multiWriter := io.MultiWriter(os.Stdout, logFile)
+	log.SetOutput(multiWriter)
+
+	// Optional: better formatting
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
+
+	return logFile
 }

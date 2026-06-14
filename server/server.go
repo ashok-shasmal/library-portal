@@ -1,12 +1,17 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/ashok-shasmal/library-portal/internal/auth"
@@ -21,11 +26,20 @@ type Server struct {
 	srv   *http.Server
 }
 
+var (
+	isReady atomic.Bool
+	isAlive atomic.Bool
+)
+
 func New(store *database.Store, addr string) *Server {
 	return &Server{Store: store, Addr: addr}
 }
 
 func (s *Server) ListenAndServe() error {
+
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGTERM)
+
 	mux := http.NewServeMux()
 
 	//Welcome Message
@@ -48,9 +62,48 @@ func (s *Server) ListenAndServe() error {
 	mux.HandleFunc("/borrow_records", s.borrowRecordsHandler)
 	mux.HandleFunc("/borrow_records/", s.borrowRecordByIDHandler)
 
+	// Readiness Probe
+	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
+		if !isReady.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+
+	http.HandleFunc("/live", func(w http.ResponseWriter, r *http.Request) {
+		if !isAlive.Load() {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+
+	go func() {
+		<-sig
+
+		log.Println("Handling Signal SIGTERM")
+		// Mark NOT READY so probes stop sending traffic
+		isReady.Store(false)
+
+		// allow in-flight requests to drain
+		time.Sleep(10 * time.Second)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := s.srv.Shutdown(ctx); err != nil {
+			log.Printf("server shutdown failed: %v", err)
+		}
+	}()
+
 	s.srv = &http.Server{Addr: s.Addr, Handler: mux}
+	isReady.Store(true)
+	isAlive.Store(true)
 	log.Printf("server listening %s", s.Addr)
-	return s.srv.ListenAndServe()
+	if err := s.srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		return err
+	}
+	return nil
 }
 
 // --- Helpers ---

@@ -17,6 +17,12 @@ docker build -t library-app:latest .
 echo "Loading image into kind cluster..."
 kind load docker-image library-app:latest --name "$CLUSTER_NAME"
 
+# echo "Creating TLS secrets..."
+# kubectl create secret tls library-tls-secret \
+#   --cert=./certs/server.crt \
+#   --key=./certs/server.key
+
+
 echo "Creating PostgreSQL credentials secret..."
 POSTGRES_USER="${POSTGRES_USER:-ashok}"
 POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-ashok123!}"
