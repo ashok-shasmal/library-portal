@@ -48,6 +48,7 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		Name:      req.Name,
 		Email:     req.Email,
 		Password:  string(hashed),
+		Role:      "USER",
 		CreatedAt: timestamppb.New(time.Now()),
 	}
 

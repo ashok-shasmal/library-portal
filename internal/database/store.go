@@ -36,8 +36,11 @@ func (s *Store) CreateUser(ctx context.Context, u *pb.User) error {
 		u.CreatedAt = timestamppb.New(createdAt)
 	}
 
-	query := `INSERT INTO users (name, email, password, balance, created_at) VALUES ($1,$2,$3,$4,$5) RETURNING id`
-	if err := s.DB.QueryRowContext(ctx, query, u.Name, u.Email, u.Password, u.Balance, createdAt).Scan(&u.Id); err != nil {
+	if u.Role == "" {
+		u.Role = "USER"
+	}
+	query := `INSERT INTO users (name, email, password, balance, role, created_at) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`
+	if err := s.DB.QueryRowContext(ctx, query, u.Name, u.Email, u.Password, u.Balance, u.Role, createdAt).Scan(&u.Id); err != nil {
 		log.Printf("Error creating user: %v", err.Error()) // Debug log
 		return err
 	}
@@ -51,9 +54,9 @@ func (s *Store) GetUserByID(ctx context.Context, id int) (*pb.User, error) {
 
 	u := &pb.User{}
 	var createdAt time.Time
-	query := `SELECT id, name, email, password, balance, created_at FROM users WHERE id = $1`
+	query := `SELECT id, name, email, password, balance, role, created_at FROM users WHERE id = $1`
 	row := s.DB.QueryRowContext(ctx, query, id)
-	if err := row.Scan(&u.Id, &u.Name, &u.Email, &u.Password, &u.Balance, &createdAt); err != nil {
+	if err := row.Scan(&u.Id, &u.Name, &u.Email, &u.Password, &u.Balance, &u.Role, &createdAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -69,9 +72,9 @@ func (s *Store) GetUserByEmail(ctx context.Context, email string) (*pb.User, err
 
 	u := &pb.User{}
 	var createdAt time.Time
-	query := `SELECT id, name, email, password, balance, created_at FROM users WHERE email = $1`
+	query := `SELECT id, name, email, password, balance, role, created_at FROM users WHERE email = $1`
 	row := s.DB.QueryRowContext(ctx, query, email)
-	if err := row.Scan(&u.Id, &u.Name, &u.Email, &u.Password, &u.Balance, &createdAt); err != nil {
+	if err := row.Scan(&u.Id, &u.Name, &u.Email, &u.Password, &u.Balance, &u.Role, &createdAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -85,8 +88,8 @@ func (s *Store) UpdateUser(ctx context.Context, u *pb.User) error {
 	ctx, cancel := context.WithTimeout(ctx, s.Timeout)
 	defer cancel()
 
-	query := `UPDATE users SET name=$1, email=$2, password=$3, balance=$4 WHERE id=$5`
-	res, err := s.DB.ExecContext(ctx, query, u.Name, u.Email, u.Password, u.Balance, u.Id)
+	query := `UPDATE users SET name=$1, email=$2, password=$3, balance=$4, role=$5 WHERE id=$6`
+	res, err := s.DB.ExecContext(ctx, query, u.Name, u.Email, u.Password, u.Balance, u.Role, u.Id)
 	if err != nil {
 		return err
 	}
@@ -109,7 +112,7 @@ func (s *Store) ListUsers(ctx context.Context) ([]pb.User, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.Timeout)
 	defer cancel()
 
-	rows, err := s.DB.QueryContext(ctx, `SELECT id, name, email, balance, created_at FROM users ORDER BY id`)
+	rows, err := s.DB.QueryContext(ctx, `SELECT id, name, email, balance, role, created_at FROM users ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -119,7 +122,7 @@ func (s *Store) ListUsers(ctx context.Context) ([]pb.User, error) {
 	for rows.Next() {
 		var u pb.User
 		var createdAt time.Time
-		if err := rows.Scan(&u.Id, &u.Name, &u.Email, &u.Balance, &createdAt); err != nil {
+		if err := rows.Scan(&u.Id, &u.Name, &u.Email, &u.Balance, &u.Role, &createdAt); err != nil {
 			return nil, err
 		}
 		u.CreatedAt = timestamppb.New(createdAt)
@@ -225,8 +228,39 @@ func (s *Store) CreateBorrowRecord(ctx context.Context, r *pb.BorrowRecord) erro
 	} else {
 		returnedAt = nil
 	}
-	query := `INSERT INTO borrow_records (user_id, book_id, borrowed_at, due_date, returned_at, rent_paid) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`
-	return s.DB.QueryRowContext(ctx, query, r.UserId, r.BookId, borrowedAt, dueDate, returnedAt, r.RentPaid).Scan(&r.Id)
+
+	var err error
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			tx.Rollback()
+		}
+	}()
+
+	var isAvailable bool
+	if err = tx.QueryRowContext(ctx, `SELECT is_available FROM books WHERE id=$1 FOR UPDATE`, r.BookId).Scan(&isAvailable); err != nil {
+		return err
+	}
+	if !isAvailable {
+		return fmt.Errorf("book unavailable")
+	}
+
+	insertQuery := `INSERT INTO borrow_records (user_id, book_id, borrowed_at, due_date, returned_at, rent_paid) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`
+	if err = tx.QueryRowContext(ctx, insertQuery, r.UserId, r.BookId, borrowedAt, dueDate, returnedAt, r.RentPaid).Scan(&r.Id); err != nil {
+		return err
+	}
+
+	if _, err = tx.ExecContext(ctx, `UPDATE books SET is_available=false WHERE id=$1`, r.BookId); err != nil {
+		return err
+	}
+
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *Store) GetBorrowRecordByID(ctx context.Context, id int) (*pb.BorrowRecord, error) {

@@ -68,6 +68,7 @@ func Migrate(db *sql.DB) error {
             email TEXT NOT NULL UNIQUE,
             password TEXT NOT NULL,
             balance DOUBLE PRECISION NOT NULL DEFAULT 0,
+            role TEXT NOT NULL DEFAULT 'USER',
             created_at TIMESTAMPTZ NOT NULL DEFAULT now()
         );`,
 
@@ -96,6 +97,11 @@ func Migrate(db *sql.DB) error {
 			tx.Rollback()
 			return fmt.Errorf("exec migration: %w", err)
 		}
+	}
+
+	if _, err := tx.ExecContext(ctx, `ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'USER'`); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("exec migration: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {

@@ -127,19 +127,82 @@ func scrubUserPassword(u *pb.User) {
 	}
 }
 
+func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
+	if !auth.IsAdmin(r.Context()) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return false
+	}
+	return true
+}
+
+func (s *Server) requireSelfOrAdmin(w http.ResponseWriter, r *http.Request, targetID int) bool {
+	uid, ok := auth.UserIDFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return false
+	}
+	if uid != targetID && !auth.IsAdmin(r.Context()) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return false
+	}
+	return true
+}
+
 // -- Welcome ---
 func (s *Server) welcome(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, "!!! Welocome to my Library !!! ")
 }
 
+// // --- Users handlers ---
+
+// func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
+//     users, err := s.Store.ListUsers(r.Context())
+//     if err != nil {
+//         log.Printf("usersHandler GET ListUsers error: %v", err)
+//         http.Error(w, "server error", http.StatusInternalServerError)
+//         return
+//     }
+
+//     for i := range users {
+//         scrubUserPassword(&users[i])
+//     }
+
+//     log.Printf("usersHandler GET returning %d users", len(users))
+//     writeJSON(w, users)
+// }
+
+// func (s *Server) usersHandler(w http.ResponseWriter, r *http.Request) {
+// 	log.Printf("usersHandler start: %s %s", r.Method, r.URL.Path)
+// 	switch r.Method {
+// 	case http.MethodGet:
+// 		log.Printf("usersHandler GET request")
+
+// 		var handler http.Handler = http.HandlerFunc(s.handleListUsers)
+
+//         handler = auth.RequireRole("ADMIN", handler)
+//         handler = auth.Authenticate(s.Store)(handler)
+
+//         handler.ServeHTTP(w, r)
+
+// 	case http.MethodPost:
+// 		log.Printf("usersHandler POST delegate register")
+// 		// create user (registration already exists) - delegate to handler
+// 		h := &handlers.AuthHandler{Store: s.Store, TokenExpiry: 24 * time.Hour}
+// 		h.Register(w, r)
+// 	default:
+// 		log.Printf("usersHandler method not allowed: %s", r.Method)
+// 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+// 	}
+// }
+
 // --- Users handlers ---
+// Nested way of doing the same thing
 func (s *Server) usersHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("usersHandler start: %s %s", r.Method, r.URL.Path)
 	switch r.Method {
 	case http.MethodGet:
 		log.Printf("usersHandler GET request")
-		// protected
-		auth.JWTMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		adminOnly := auth.Authenticate(s.Store)(auth.RequireRole("ADMIN", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			users, err := s.Store.ListUsers(r.Context())
 			if err != nil {
 				log.Printf("usersHandler GET ListUsers error: %v", err)
@@ -151,7 +214,8 @@ func (s *Server) usersHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			log.Printf("usersHandler GET returning %d users", len(users))
 			writeJSON(w, users)
-		})).ServeHTTP(w, r)
+		})))
+		adminOnly.ServeHTTP(w, r)
 	case http.MethodPost:
 		log.Printf("usersHandler POST delegate register")
 		// create user (registration already exists) - delegate to handler
@@ -172,10 +236,14 @@ func (s *Server) userByIDHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	authenticated := auth.Authenticate(s.Store)
 	switch r.Method {
 	case http.MethodGet:
 		log.Printf("userByIDHandler GET id=%d", id)
-		auth.JWTMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authenticated(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !s.requireSelfOrAdmin(w, r, id) {
+				return
+			}
 			u, err := s.Store.GetUserByID(r.Context(), id)
 			if err != nil {
 				log.Printf("userByIDHandler GET GetUserByID error id=%d: %v", id, err)
@@ -192,7 +260,10 @@ func (s *Server) userByIDHandler(w http.ResponseWriter, r *http.Request) {
 		})).ServeHTTP(w, r)
 	case http.MethodPut:
 		log.Printf("userByIDHandler PUT id=%d", id)
-		auth.JWTMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authenticated(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !s.requireSelfOrAdmin(w, r, id) {
+				return
+			}
 			var u pb.User
 			if err := json.NewDecoder(r.Body).Decode(&u); err != nil {
 				log.Printf("userByIDHandler PUT decode error: %v", err)
@@ -209,14 +280,14 @@ func (s *Server) userByIDHandler(w http.ResponseWriter, r *http.Request) {
 		})).ServeHTTP(w, r)
 	case http.MethodDelete:
 		log.Printf("userByIDHandler DELETE id=%d", id)
-		auth.JWTMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authenticated(auth.RequireRole("ADMIN", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if err := s.Store.DeleteUser(r.Context(), id); err != nil {
 				log.Printf("userByIDHandler DELETE DeleteUser error id=%d: %v", id, err)
 				http.Error(w, "server error", http.StatusInternalServerError)
 				return
 			}
 			writeJSON(w, map[string]string{"status": "deleted"})
-		})).ServeHTTP(w, r)
+		}))).ServeHTTP(w, r)
 	default:
 		log.Printf("userByIDHandler method not allowed: %s", r.Method)
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -229,7 +300,6 @@ func (s *Server) booksHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		log.Printf("booksHandler GET request")
-		// public listing allowed, but use auth if desired
 		books, err := s.Store.ListBooks(r.Context())
 		if err != nil {
 			log.Printf("booksHandler GET ListBooks error: %v", err)
@@ -240,14 +310,14 @@ func (s *Server) booksHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, books)
 	case http.MethodPost:
 		log.Printf("booksHandler POST request")
-		// create book - protected
-		auth.JWTMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		adminOnly := auth.Authenticate(s.Store)(auth.RequireRole("ADMIN", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			var b pb.Book
 			if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
 				log.Printf("booksHandler POST decode error: %v", err)
 				http.Error(w, "bad request", http.StatusBadRequest)
 				return
 			}
+			b.IsAvailable = true
 			if err := s.Store.CreateBook(r.Context(), &b); err != nil {
 				log.Printf("booksHandler POST CreateBook error: %v", err)
 				http.Error(w, "server error", http.StatusInternalServerError)
@@ -255,7 +325,8 @@ func (s *Server) booksHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			log.Printf("booksHandler POST created book id=%d title=%s", b.Id, b.Title)
 			writeJSON(w, b)
-		})).ServeHTTP(w, r)
+		})))
+		adminOnly.ServeHTTP(w, r)
 	default:
 		log.Printf("booksHandler method not allowed: %s", r.Method)
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -283,7 +354,7 @@ func (s *Server) bookByIDHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, b)
 	case http.MethodPut:
-		auth.JWTMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		adminOnly := auth.Authenticate(s.Store)(auth.RequireRole("ADMIN", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			var b pb.Book
 			if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
 				http.Error(w, "bad request", http.StatusBadRequest)
@@ -295,15 +366,17 @@ func (s *Server) bookByIDHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			writeJSON(w, map[string]string{"status": "ok"})
-		})).ServeHTTP(w, r)
+		})))
+		adminOnly.ServeHTTP(w, r)
 	case http.MethodDelete:
-		auth.JWTMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		adminOnly := auth.Authenticate(s.Store)(auth.RequireRole("ADMIN", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if err := s.Store.DeleteBook(r.Context(), id); err != nil {
 				http.Error(w, "server error", http.StatusInternalServerError)
 				return
 			}
 			writeJSON(w, map[string]string{"status": "deleted"})
-		})).ServeHTTP(w, r)
+		})))
+		adminOnly.ServeHTTP(w, r)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
@@ -315,7 +388,6 @@ func (s *Server) borrowRecordsHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		log.Printf("borrowRecordsHandler GET request")
-		// requires user id as query param: ?user_id=123
 		q := r.URL.Query().Get("user_id")
 		if q == "" {
 			log.Printf("borrowRecordsHandler GET missing user_id")
@@ -328,8 +400,10 @@ func (s *Server) borrowRecordsHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "bad user_id", http.StatusBadRequest)
 			return
 		}
-		// protected
-		auth.JWTMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth.Authenticate(s.Store)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !s.requireSelfOrAdmin(w, r, uid) {
+				return
+			}
 			records, err := s.Store.ListBorrowRecordsByUser(r.Context(), uid)
 			if err != nil {
 				log.Printf("borrowRecordsHandler GET ListBorrowRecordsByUser error uid=%d: %v", uid, err)
@@ -341,12 +415,38 @@ func (s *Server) borrowRecordsHandler(w http.ResponseWriter, r *http.Request) {
 		})).ServeHTTP(w, r)
 	case http.MethodPost:
 		log.Printf("borrowRecordsHandler POST request")
-		// create borrow record - protected
-		auth.JWTMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth.Authenticate(s.Store)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			var rec pb.BorrowRecord
 			if err := json.NewDecoder(r.Body).Decode(&rec); err != nil {
 				log.Printf("borrowRecordsHandler POST decode error: %v", err)
 				http.Error(w, "bad request", http.StatusBadRequest)
+				return
+			}
+			uid, ok := auth.UserIDFromContext(r.Context())
+			if !ok {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			if rec.UserId == 0 {
+				rec.UserId = int32(uid)
+			}
+			if !auth.IsAdmin(r.Context()) && int(rec.UserId) != uid {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+
+			book, err := s.Store.GetBookByID(r.Context(), int(rec.BookId))
+			if err != nil {
+				log.Printf("borrowRecordsHandler POST GetBookByID error: %v", err)
+				http.Error(w, "server error", http.StatusInternalServerError)
+				return
+			}
+			if book == nil {
+				http.Error(w, "book not found", http.StatusNotFound)
+				return
+			}
+			if !book.IsAvailable {
+				http.Error(w, "book unavailable", http.StatusBadRequest)
 				return
 			}
 			if err := s.Store.CreateBorrowRecord(r.Context(), &rec); err != nil {
@@ -369,20 +469,26 @@ func (s *Server) borrowRecordByIDHandler(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
+	authenticated := auth.Authenticate(s.Store)
 	switch r.Method {
 	case http.MethodGet:
-		rec, err := s.Store.GetBorrowRecordByID(r.Context(), id)
-		if err != nil {
-			http.Error(w, "server error", http.StatusInternalServerError)
-			return
-		}
-		if rec == nil {
-			http.NotFound(w, r)
-			return
-		}
-		writeJSON(w, rec)
+		authenticated(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			rec, err := s.Store.GetBorrowRecordByID(r.Context(), id)
+			if err != nil {
+				http.Error(w, "server error", http.StatusInternalServerError)
+				return
+			}
+			if rec == nil {
+				http.NotFound(w, r)
+				return
+			}
+			if !s.requireSelfOrAdmin(w, r, int(rec.UserId)) {
+				return
+			}
+			writeJSON(w, rec)
+		})).ServeHTTP(w, r)
 	case http.MethodPut:
-		auth.JWTMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		adminOnly := authenticated(auth.RequireRole("ADMIN", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			var rec pb.BorrowRecord
 			if err := json.NewDecoder(r.Body).Decode(&rec); err != nil {
 				http.Error(w, "bad request", http.StatusBadRequest)
@@ -394,15 +500,17 @@ func (s *Server) borrowRecordByIDHandler(w http.ResponseWriter, r *http.Request)
 				return
 			}
 			writeJSON(w, map[string]string{"status": "ok"})
-		})).ServeHTTP(w, r)
+		})))
+		adminOnly.ServeHTTP(w, r)
 	case http.MethodDelete:
-		auth.JWTMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		adminOnly := authenticated(auth.RequireRole("ADMIN", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if err := s.Store.DeleteBorrowRecord(r.Context(), id); err != nil {
 				http.Error(w, "server error", http.StatusInternalServerError)
 				return
 			}
 			writeJSON(w, map[string]string{"status": "deleted"})
-		})).ServeHTTP(w, r)
+		})))
+		adminOnly.ServeHTTP(w, r)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}

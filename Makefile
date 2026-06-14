@@ -1,6 +1,12 @@
 SHELL := /bin/bash
 
-.PHONY: dev-up dev-down dev-status pf-start pf-stop
+.PHONY: dev-up dev-down dev-status pf-start pf-stop dev-build
+
+# build the code locally
+dev-build:
+	@echo build the repo
+	@go build ./cmd/server/main.go 
+	@echo dev-build finished
 
 # Create the kind cluster, build image, deploy manifests and start port-forward
 dev-up:
