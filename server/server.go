@@ -88,8 +88,9 @@ func (s *Server) ListenAndServe() error {
 	router.HandleFunc("/books/{id:[0-9]+}", s.bookByIDHandler).Methods(http.MethodGet, http.MethodPut, http.MethodDelete)
 
 	// Borrow records
-	router.HandleFunc("/borrow_records", s.borrowRecordsHandler).Methods(http.MethodGet, http.MethodPost)
-	router.HandleFunc("/borrow_records/{id:[0-9]+}", s.borrowRecordByIDHandler).Methods(http.MethodGet, http.MethodPut, http.MethodDelete)
+	borrowRecordsHandler := auth.Authenticate(s.Store)(http.HandlerFunc(s.borrowRecordsHandler))
+	router.Handle("/borrow_records", borrowRecordsHandler).Methods(http.MethodGet, http.MethodPost)
+	router.Handle("/borrow_records/{id:[0-9]+}", auth.Authenticate(s.Store)(http.HandlerFunc(s.borrowRecordByIDHandler))).Methods(http.MethodGet, http.MethodPut, http.MethodDelete)
 
 	// Readiness Probe
 	router.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {

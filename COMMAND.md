@@ -15,7 +15,7 @@ curl -X POST http://localhost:8080/register \
 ```bash
 curl -X POST http://localhost:8080/register \
   -H "Content-Type: application/json" \
-  -d '{"name":"Admin User","email":"admin2@example.com","password":"adminpass","role":"ADMIN"}'
+  -d '{"name":"Admin User","email":"admin@example.com","password":"adminpass","role":"ADMIN"}'
 ```
 
 ## 3) Login as a user
