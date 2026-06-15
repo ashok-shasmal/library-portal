@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/ashok-shasmal/library-portal/internal/auth"
@@ -22,6 +23,7 @@ type registerReq struct {
 	Name     string `json:"name"`
 	Email    string `json:"email"`
 	Password string `json:"password"`
+	Role     string `json:"role,omitempty"`
 }
 
 type authResp struct {
@@ -38,6 +40,42 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	role := strings.ToUpper(strings.TrimSpace(req.Role))
+	if role == "" {
+		role = "USER"
+	}
+	if role != "USER" && role != "ADMIN" {
+		http.Error(w, "invalid role", http.StatusBadRequest)
+		return
+	}
+
+	if role == "ADMIN" {
+		ah := r.Header.Get("Authorization")
+		if ah == "" {
+			http.Error(w, "missing authorization", http.StatusUnauthorized)
+			return
+		}
+		parts := strings.SplitN(ah, " ", 2)
+		if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
+			http.Error(w, "invalid authorization header", http.StatusUnauthorized)
+			return
+		}
+		uid, err := auth.ValidateToken(parts[1])
+		if err != nil {
+			http.Error(w, "invalid token", http.StatusUnauthorized)
+			return
+		}
+		creator, err := h.Store.GetUserByID(context.Background(), uid)
+		if err != nil {
+			http.Error(w, "server error", http.StatusInternalServerError)
+			return
+		}
+		if creator == nil || creator.Role != "ADMIN" {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+	}
+
 	hashed, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
 		http.Error(w, "server error", http.StatusInternalServerError)
@@ -48,7 +86,7 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		Name:      req.Name,
 		Email:     req.Email,
 		Password:  string(hashed),
-		Role:      "USER",
+		Role:      role,
 		CreatedAt: timestamppb.New(time.Now()),
 	}
 
