@@ -5,7 +5,7 @@ SHELL := /bin/bash
 # build the code locally
 dev-build:
 	@echo build the repo
-	@go build ./cmd/server/main.go 
+	@go build -o ./cmd/server/libApp ./cmd/server/main.go 
 	@echo dev-build finished
 
 # Create the kind cluster, build image, deploy manifests and start port-forward

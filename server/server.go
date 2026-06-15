@@ -3,13 +3,12 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
-	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -18,12 +17,21 @@ import (
 	"github.com/ashok-shasmal/library-portal/internal/database"
 	"github.com/ashok-shasmal/library-portal/internal/handlers"
 	"github.com/ashok-shasmal/library-portal/internal/pb"
+	"github.com/gorilla/mux"
 )
 
+type borrowJob struct {
+	w    http.ResponseWriter
+	r    *http.Request
+	done chan struct{}
+}
+
 type Server struct {
-	Store *database.Store
-	Addr  string
-	srv   *http.Server
+	Store             *database.Store
+	Addr              string
+	srv               *http.Server
+	borrowJobQueue    chan borrowJob
+	borrowWorkersOnce sync.Once
 }
 
 var (
@@ -32,7 +40,11 @@ var (
 )
 
 func New(store *database.Store, addr string) *Server {
-	return &Server{Store: store, Addr: addr}
+	return &Server{
+		Store:          store,
+		Addr:           addr,
+		borrowJobQueue: make(chan borrowJob, 10),
+	}
 }
 
 func (s *Server) ListenAndServe() error {
@@ -40,44 +52,44 @@ func (s *Server) ListenAndServe() error {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGTERM)
 
-	mux := http.NewServeMux()
+	router := mux.NewRouter()
 
-	//Welcome Message
-	mux.HandleFunc("/", s.welcome)
+	// Welcome Message
+	router.HandleFunc("/", s.welcome).Methods(http.MethodGet)
 
 	// Auth handlers
 	authH := &handlers.AuthHandler{Store: s.Store, TokenExpiry: 24 * time.Hour}
-	mux.HandleFunc("/register", authH.Register)
-	mux.HandleFunc("/login", authH.Login)
+	router.HandleFunc("/register", authH.Register).Methods(http.MethodPost)
+	router.HandleFunc("/login", authH.Login).Methods(http.MethodPost)
 
 	// Users
-	mux.HandleFunc("/users", s.usersHandler)
-	mux.HandleFunc("/users/", s.userByIDHandler)
+	router.HandleFunc("/users", s.usersHandler).Methods(http.MethodGet, http.MethodPost)
+	router.HandleFunc("/users/{id:[0-9]+}", s.userByIDHandler).Methods(http.MethodGet, http.MethodPut, http.MethodDelete)
 
 	// Books
-	mux.HandleFunc("/books", s.booksHandler)
-	mux.HandleFunc("/books/", s.bookByIDHandler)
+	router.HandleFunc("/books", s.booksHandler).Methods(http.MethodGet, http.MethodPost)
+	router.HandleFunc("/books/{id:[0-9]+}", s.bookByIDHandler).Methods(http.MethodGet, http.MethodPut, http.MethodDelete)
 
 	// Borrow records
-	mux.HandleFunc("/borrow_records", s.borrowRecordsHandler)
-	mux.HandleFunc("/borrow_records/", s.borrowRecordByIDHandler)
+	router.HandleFunc("/borrow_records", s.borrowRecordsHandler).Methods(http.MethodGet, http.MethodPost)
+	router.HandleFunc("/borrow_records/{id:[0-9]+}", s.borrowRecordByIDHandler).Methods(http.MethodGet, http.MethodPut, http.MethodDelete)
 
 	// Readiness Probe
-	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
+	router.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
 		if !isReady.Load() {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-	})
+	}).Methods(http.MethodGet)
 
-	http.HandleFunc("/live", func(w http.ResponseWriter, r *http.Request) {
+	router.HandleFunc("/live", func(w http.ResponseWriter, r *http.Request) {
 		if !isAlive.Load() {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-	})
+	}).Methods(http.MethodGet)
 
 	go func() {
 		<-sig
@@ -96,7 +108,7 @@ func (s *Server) ListenAndServe() error {
 		}
 	}()
 
-	s.srv = &http.Server{Addr: s.Addr, Handler: mux}
+	s.srv = &http.Server{Addr: s.Addr, Handler: router}
 	isReady.Store(true)
 	isAlive.Store(true)
 	log.Printf("server listening %s", s.Addr)
@@ -107,15 +119,6 @@ func (s *Server) ListenAndServe() error {
 }
 
 // --- Helpers ---
-func parseIDFromPath(prefix, path string) (int, error) {
-	idStr := strings.TrimPrefix(path, prefix)
-	idStr = strings.Trim(idStr, "/")
-	if idStr == "" {
-		return 0, fmt.Errorf("missing id")
-	}
-	return strconv.Atoi(idStr)
-}
-
 func writeJSON(w http.ResponseWriter, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(v)
@@ -146,6 +149,62 @@ func (s *Server) requireSelfOrAdmin(w http.ResponseWriter, r *http.Request, targ
 		return false
 	}
 	return true
+}
+
+func (s *Server) ensureBorrowWorkers() {
+	s.borrowWorkersOnce.Do(func() {
+		for i := 0; i < 10; i++ {
+			go func() {
+				for job := range s.borrowJobQueue {
+					s.processBorrowJob(job.w, job.r)
+					close(job.done)
+				}
+			}()
+		}
+	})
+}
+
+func (s *Server) processBorrowJob(w http.ResponseWriter, r *http.Request) {
+	var rec pb.BorrowRecord
+	if err := json.NewDecoder(r.Body).Decode(&rec); err != nil {
+		log.Printf("borrowRecordsHandler POST decode error: %v", err)
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	uid, ok := auth.UserIDFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if rec.UserId == 0 {
+		rec.UserId = int32(uid)
+	}
+	if !auth.IsAdmin(r.Context()) && int(rec.UserId) != uid {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	book, err := s.Store.GetBookByID(r.Context(), int(rec.BookId))
+	if err != nil {
+		log.Printf("borrowRecordsHandler POST GetBookByID error: %v", err)
+		http.Error(w, "server error", http.StatusInternalServerError)
+		return
+	}
+	if book == nil {
+		http.Error(w, "book not found", http.StatusNotFound)
+		return
+	}
+	if !book.IsAvailable {
+		http.Error(w, "book unavailable", http.StatusBadRequest)
+		return
+	}
+	if err := s.Store.CreateBorrowRecord(r.Context(), &rec); err != nil {
+		log.Printf("borrowRecordsHandler POST CreateBorrowRecord error: %v", err)
+		http.Error(w, "server error", http.StatusInternalServerError)
+		return
+	}
+	log.Printf("borrowRecordsHandler POST created record id=%d user_id=%d book_id=%d", rec.Id, rec.UserId, rec.BookId)
+	writeJSON(w, rec)
 }
 
 // -- Welcome ---
@@ -229,7 +288,8 @@ func (s *Server) usersHandler(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) userByIDHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("userByIDHandler start: %s %s", r.Method, r.URL.Path)
-	id, err := parseIDFromPath("/users/", r.URL.Path)
+	vars := mux.Vars(r)
+	id, err := strconv.Atoi(vars["id"])
 	if err != nil {
 		log.Printf("userByIDHandler parse error: %v", err)
 		http.Error(w, "bad request", http.StatusBadRequest)
@@ -335,7 +395,8 @@ func (s *Server) booksHandler(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) bookByIDHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("bookByIDHandler start: %s %s", r.Method, r.URL.Path)
-	id, err := parseIDFromPath("/books/", r.URL.Path)
+	vars := mux.Vars(r)
+	id, err := strconv.Atoi(vars["id"])
 	if err != nil {
 		log.Printf("bookByIDHandler parse error: %v", err)
 		http.Error(w, "bad request", http.StatusBadRequest)
@@ -415,48 +476,21 @@ func (s *Server) borrowRecordsHandler(w http.ResponseWriter, r *http.Request) {
 		})).ServeHTTP(w, r)
 	case http.MethodPost:
 		log.Printf("borrowRecordsHandler POST request")
-		auth.Authenticate(s.Store)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			var rec pb.BorrowRecord
-			if err := json.NewDecoder(r.Body).Decode(&rec); err != nil {
-				log.Printf("borrowRecordsHandler POST decode error: %v", err)
-				http.Error(w, "bad request", http.StatusBadRequest)
-				return
-			}
-			uid, ok := auth.UserIDFromContext(r.Context())
-			if !ok {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
-				return
-			}
-			if rec.UserId == 0 {
-				rec.UserId = int32(uid)
-			}
-			if !auth.IsAdmin(r.Context()) && int(rec.UserId) != uid {
-				http.Error(w, "forbidden", http.StatusForbidden)
-				return
-			}
-
-			book, err := s.Store.GetBookByID(r.Context(), int(rec.BookId))
-			if err != nil {
-				log.Printf("borrowRecordsHandler POST GetBookByID error: %v", err)
-				http.Error(w, "server error", http.StatusInternalServerError)
-				return
-			}
-			if book == nil {
-				http.Error(w, "book not found", http.StatusNotFound)
-				return
-			}
-			if !book.IsAvailable {
-				http.Error(w, "book unavailable", http.StatusBadRequest)
-				return
-			}
-			if err := s.Store.CreateBorrowRecord(r.Context(), &rec); err != nil {
-				log.Printf("borrowRecordsHandler POST CreateBorrowRecord error: %v", err)
-				http.Error(w, "server error", http.StatusInternalServerError)
-				return
-			}
-			log.Printf("borrowRecordsHandler POST created record id=%d user_id=%d book_id=%d", rec.Id, rec.UserId, rec.BookId)
-			writeJSON(w, rec)
-		})).ServeHTTP(w, r)
+		s.ensureBorrowWorkers()
+		job := borrowJob{
+			w:    w,
+			r:    r,
+			done: make(chan struct{}),
+		}
+		select {
+		case s.borrowJobQueue <- job:
+			<-job.done
+			return
+		default:
+			log.Printf("borrowRecordsHandler POST rejected: worker pool full")
+			http.Error(w, "service overloaded, too many borrow requests", http.StatusTooManyRequests)
+			return
+		}
 	default:
 		log.Printf("borrowRecordsHandler method not allowed: %s", r.Method)
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -464,7 +498,8 @@ func (s *Server) borrowRecordsHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) borrowRecordByIDHandler(w http.ResponseWriter, r *http.Request) {
-	id, err := parseIDFromPath("/borrow_records/", r.URL.Path)
+	vars := mux.Vars(r)
+	id, err := strconv.Atoi(vars["id"])
 	if err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return

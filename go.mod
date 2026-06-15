@@ -10,3 +10,5 @@ require (
 require golang.org/x/crypto v0.53.0
 
 require google.golang.org/protobuf v1.30.0
+
+require github.com/gorilla/mux v1.8.0
