@@ -33,12 +33,28 @@ services:
     depends_on:
       postgres_db:
         condition: service_healthy
+      payment_service:
+        condition: service_started
     environment:
       - DB_HOST=postgres_db
       - DB_PORT=5432
       - DB_USER=ashok
       - DB_PASSWORD=ashok123!
       - DB_NAME=library_db
+      - PAYMENT_SERVICE_ADDRESS=payment_service:50051
+
+  payment_service:
+    build:
+      context: .
+      dockerfile: payment/Dockerfile
+    container_name: payment_service
+    networks:
+      - library_network
+    ports:
+      - "50051:50051"
+    depends_on:
+      postgres_db:
+        condition: service_healthy
 
 volumes:
   pgdata: # This ensures your data isn't deleted when the container stops

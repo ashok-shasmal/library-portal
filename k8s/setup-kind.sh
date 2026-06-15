@@ -11,11 +11,15 @@ kind delete cluster --name "$CLUSTER_NAME" >/dev/null 2>&1 || true
 echo "Creating kind cluster '$CLUSTER_NAME'..."
 kind create cluster --name "$CLUSTER_NAME"
 
-echo "Building Go app Docker image..."
+echo "Building library app Docker image..."
 docker build -t library-app:latest .
 
-echo "Loading image into kind cluster..."
+echo "Building payment service Docker image..."
+docker build -t payment-service:latest -f payment/Dockerfile .
+
+echo "Loading images into kind cluster..."
 kind load docker-image library-app:latest --name "$CLUSTER_NAME"
+kind load docker-image payment-service:latest --name "$CLUSTER_NAME"
 
 # echo "Creating TLS secrets..."
 # kubectl create secret tls library-tls-secret \
@@ -37,6 +41,7 @@ kubectl create secret generic postgres-credentials \
 echo "Applying Kubernetes manifests..."
 kubectl apply -f k8s/postgres-statefulset.yaml
 kubectl apply -f k8s/library-app-deployment.yaml
+kubectl apply -f k8s/payment-deployment.yaml
 
 echo "Waiting for PostgreSQL pods to be ready..."
 kubectl wait --for=condition=ready pod -l app=postgres --timeout=180s

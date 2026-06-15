@@ -9,6 +9,9 @@ if ! command -v protoc >/dev/null 2>&1; then
   exit 1
 fi
 
-protoc -I "${PROTO_DIR}" --go_out=paths=source_relative:${OUT_DIR} ${PROTO_DIR}/*.proto
+protoc -I "${PROTO_DIR}" \
+  --go_out=paths=source_relative:${OUT_DIR} \
+  --go-grpc_out=paths=source_relative:${OUT_DIR} \
+  ${PROTO_DIR}/*.proto
 
 echo "Generated proto Go code into ${OUT_DIR}"

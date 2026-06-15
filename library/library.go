@@ -56,7 +56,8 @@ func (l *library) InitDB() {
 
 // Init the http Server
 func (l *library) InitServer() {
-	l.srv = server.New(l.store, ":8080")
+	paymentAddress := os.Getenv("PAYMENT_SERVICE_ADDRESS")
+	l.srv = server.New(l.store, ":8080", paymentAddress)
 	log.Fatal(l.srv.ListenAndServe())
 }
 

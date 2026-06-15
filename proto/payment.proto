@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package pb;
+
+option go_package = "github.com/ashok-shasmal/library-portal/internal/pb;pb";
+
+message PaymentRequest {
+  int32 user_id = 1;
+  int32 book_id = 2;
+  double amount = 3;
+  int32 weeks = 4;
+}
+
+message PaymentResponse {
+  bool success = 1;
+  string transaction_id = 2;
+  string message = 3;
+}
+
+service PaymentService {
+  rpc Charge(PaymentRequest) returns (PaymentResponse) {}
+}

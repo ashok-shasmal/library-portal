@@ -60,6 +60,8 @@ spec:
                 secretKeyRef:
                   name: postgres-credentials
                   key: POSTGRES_DB
+            - name: PAYMENT_SERVICE_ADDRESS
+              value: "payment-service:50051"
             - name: POD_NAME
               valueFrom:
                 fieldRef:

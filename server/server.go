@@ -13,11 +13,15 @@ import (
 	"syscall"
 	"time"
 
+	"google.golang.org/protobuf/types/known/timestamppb"
+
 	"github.com/ashok-shasmal/library-portal/internal/auth"
 	"github.com/ashok-shasmal/library-portal/internal/database"
 	"github.com/ashok-shasmal/library-portal/internal/handlers"
 	"github.com/ashok-shasmal/library-portal/internal/pb"
 	"github.com/gorilla/mux"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 type borrowJob struct {
@@ -32,6 +36,8 @@ type Server struct {
 	srv               *http.Server
 	borrowJobQueue    chan borrowJob
 	borrowWorkersOnce sync.Once
+	paymentConn       *grpc.ClientConn
+	paymentClient     pb.PaymentServiceClient
 }
 
 var (
@@ -39,11 +45,22 @@ var (
 	isAlive atomic.Bool
 )
 
-func New(store *database.Store, addr string) *Server {
+func New(store *database.Store, addr, paymentAddress string) *Server {
+	if paymentAddress == "" {
+		paymentAddress = "localhost:50051"
+	}
+
+	conn, err := grpc.Dial(paymentAddress, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		log.Fatalf("failed to connect to payment service: %v", err)
+	}
+
 	return &Server{
 		Store:          store,
 		Addr:           addr,
 		borrowJobQueue: make(chan borrowJob, 10),
+		paymentConn:    conn,
+		paymentClient:  pb.NewPaymentServiceClient(conn),
 	}
 }
 
@@ -198,6 +215,30 @@ func (s *Server) processBorrowJob(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "book unavailable", http.StatusBadRequest)
 		return
 	}
+
+	if rec.DueDate == nil || rec.DueDate.AsTime().IsZero() {
+		rec.DueDate = timestamppb.New(time.Now().Add(7 * 24 * time.Hour))
+	}
+	rec.RentPaid = 50.0
+
+	payReq := &pb.PaymentRequest{
+		UserId: int32(uid),
+		BookId: rec.BookId,
+		Amount: 50.0,
+		Weeks:  1,
+	}
+	payResp, err := s.paymentClient.Charge(r.Context(), payReq)
+	if err != nil {
+		log.Printf("borrowRecordsHandler POST payment error: %v", err)
+		http.Error(w, "payment failed", http.StatusPaymentRequired)
+		return
+	}
+	if payResp == nil || !payResp.Success {
+		log.Printf("borrowRecordsHandler POST payment declined: %v", payResp)
+		http.Error(w, "payment declined", http.StatusPaymentRequired)
+		return
+	}
+
 	if err := s.Store.CreateBorrowRecord(r.Context(), &rec); err != nil {
 		log.Printf("borrowRecordsHandler POST CreateBorrowRecord error: %v", err)
 		http.Error(w, "server error", http.StatusInternalServerError)
