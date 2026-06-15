@@ -12,12 +12,9 @@ curl -X POST http://localhost:8080/register \
 
 ## 2) Register an admin user
 
-This requires an existing admin bearer token in the `Authorization` header.
-
 ```bash
 curl -X POST http://localhost:8080/register \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
   -d '{"name":"Admin User","email":"admin2@example.com","password":"adminpass","role":"ADMIN"}'
 ```
 
@@ -66,6 +63,6 @@ curl -X POST http://localhost:8080/borrow_records \
 
 ## Notes
 
-- The `/register` endpoint now accepts an optional `role` field.
-- `role: "ADMIN"` is only allowed when the request includes a valid admin bearer token.
+- The `/register` endpoint accepts an optional `role` field.
+- Use `role: "ADMIN"` to create an admin account.
 - Normal registration without `role` defaults to `USER`.

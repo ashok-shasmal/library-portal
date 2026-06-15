@@ -49,33 +49,6 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if role == "ADMIN" {
-		ah := r.Header.Get("Authorization")
-		if ah == "" {
-			http.Error(w, "missing authorization", http.StatusUnauthorized)
-			return
-		}
-		parts := strings.SplitN(ah, " ", 2)
-		if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
-			http.Error(w, "invalid authorization header", http.StatusUnauthorized)
-			return
-		}
-		uid, err := auth.ValidateToken(parts[1])
-		if err != nil {
-			http.Error(w, "invalid token", http.StatusUnauthorized)
-			return
-		}
-		creator, err := h.Store.GetUserByID(context.Background(), uid)
-		if err != nil {
-			http.Error(w, "server error", http.StatusInternalServerError)
-			return
-		}
-		if creator == nil || creator.Role != "ADMIN" {
-			http.Error(w, "forbidden", http.StatusForbidden)
-			return
-		}
-	}
-
 	hashed, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
 		http.Error(w, "server error", http.StatusInternalServerError)
