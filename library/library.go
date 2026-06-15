@@ -19,6 +19,7 @@ func Init() *library {
 	return &lib
 }
 
+// Init DB Connections
 func (l *library) InitDB() {
 	dsn := os.Getenv("DATABASE_DSN")
 	if dsn == "" {
@@ -53,11 +54,13 @@ func (l *library) InitDB() {
 	l.store = database.NewStore(db)
 }
 
+// Init the http Server
 func (l *library) InitServer() {
 	l.srv = server.New(l.store, ":8080")
 	log.Fatal(l.srv.ListenAndServe())
 }
 
+// InitLogger : create log file in the pod for all sort of logging
 func (l *library) InitLogger() *os.File {
 	logFile, err := os.OpenFile("/var/log/app.log",
 		os.O_CREATE|os.O_WRONLY|os.O_APPEND,
