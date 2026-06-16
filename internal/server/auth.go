@@ -1,4 +1,4 @@
-package handlers
+package server
 
 import (
 	"context"
@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ashok-shasmal/library-portal/internal/auth"
 	"github.com/ashok-shasmal/library-portal/internal/database"
 	"github.com/ashok-shasmal/library-portal/internal/pb"
 	"golang.org/x/crypto/bcrypt"
@@ -68,7 +67,7 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := auth.GenerateToken(int(u.Id), h.TokenExpiry)
+	token, err := GenerateToken(int(u.Id), h.TokenExpiry)
 	if err != nil {
 		http.Error(w, "could not generate token", http.StatusInternalServerError)
 		return
@@ -105,7 +104,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := auth.GenerateToken(int(u.Id), h.TokenExpiry)
+	token, err := GenerateToken(int(u.Id), h.TokenExpiry)
 	if err != nil {
 		http.Error(w, "could not generate token", http.StatusInternalServerError)
 		return
