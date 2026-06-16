@@ -6,7 +6,7 @@ import (
 	"os"
 
 	"github.com/ashok-shasmal/library-portal/internal/database"
-	"github.com/ashok-shasmal/library-portal/internal/server"
+	server "github.com/ashok-shasmal/library-portal/internal/httphandler"
 )
 
 type library struct {
