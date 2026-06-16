@@ -57,7 +57,8 @@ func (l *library) InitDB() {
 // Init the http Server
 func (l *library) InitServer() {
 	paymentAddress := os.Getenv("PAYMENT_SERVICE_ADDRESS")
-	l.srv = server.New(l.store, ":8080", paymentAddress)
+	redisAddress := os.Getenv("REDIS_ADDRESS")
+	l.srv = server.New(l.store, ":8080", paymentAddress, redisAddress)
 	log.Fatal(l.srv.ListenAndServe())
 }
 

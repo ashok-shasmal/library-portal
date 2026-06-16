@@ -1,8 +1,12 @@
 package server
 
+// server.go contains the HTTP server and background job orchestration
+// for the library portal, including auth, book handling, and payment integration.
+
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -13,15 +17,15 @@ import (
 	"syscall"
 	"time"
 
-	"google.golang.org/protobuf/types/known/timestamppb"
-
 	"github.com/ashok-shasmal/library-portal/internal/auth"
 	"github.com/ashok-shasmal/library-portal/internal/database"
 	"github.com/ashok-shasmal/library-portal/internal/handlers"
 	"github.com/ashok-shasmal/library-portal/internal/pb"
+	"github.com/go-redis/redis/v8"
 	"github.com/gorilla/mux"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type borrowJob struct {
@@ -38,6 +42,7 @@ type Server struct {
 	borrowWorkersOnce sync.Once
 	paymentConn       *grpc.ClientConn
 	paymentClient     pb.PaymentServiceClient
+	redisClient       *redis.Client
 }
 
 var (
@@ -45,7 +50,7 @@ var (
 	isAlive atomic.Bool
 )
 
-func New(store *database.Store, addr, paymentAddress string) *Server {
+func New(store *database.Store, addr, paymentAddress, redisAddress string) *Server {
 	if paymentAddress == "" {
 		paymentAddress = "localhost:50051"
 	}
@@ -55,12 +60,24 @@ func New(store *database.Store, addr, paymentAddress string) *Server {
 		log.Fatalf("failed to connect to payment service: %v", err)
 	}
 
+	var redisClient *redis.Client
+	if redisAddress != "" {
+		redisClient = redis.NewClient(&redis.Options{Addr: redisAddress})
+		if err := redisClient.Ping(context.Background()).Err(); err != nil {
+			log.Printf("warning: redis unavailable at %s: %v; caching disabled", redisAddress, err)
+			redisClient = nil
+		} else {
+			log.Printf("redis cache enabled at %s", redisAddress)
+		}
+	}
+
 	return &Server{
 		Store:          store,
 		Addr:           addr,
 		borrowJobQueue: make(chan borrowJob, 10),
 		paymentConn:    conn,
 		paymentClient:  pb.NewPaymentServiceClient(conn),
+		redisClient:    redisClient,
 	}
 }
 
@@ -167,6 +184,83 @@ func (s *Server) requireSelfOrAdmin(w http.ResponseWriter, r *http.Request, targ
 		return false
 	}
 	return true
+}
+
+func (s *Server) cacheKeyBookList() string {
+	return "books:list"
+}
+
+func (s *Server) cacheKeyBook(id int) string {
+	return fmt.Sprintf("books:%d", id)
+}
+
+func (s *Server) getCachedBooks(ctx context.Context) ([]pb.Book, bool, error) {
+	if s.redisClient == nil {
+		return nil, false, nil
+	}
+	data, err := s.redisClient.Get(ctx, s.cacheKeyBookList()).Bytes()
+	if err == redis.Nil {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	var books []pb.Book
+	if err := json.Unmarshal(data, &books); err != nil {
+		return nil, false, err
+	}
+	return books, true, nil
+}
+
+func (s *Server) setCachedBooks(ctx context.Context, books []pb.Book) error {
+	if s.redisClient == nil {
+		return nil
+	}
+	data, err := json.Marshal(books)
+	if err != nil {
+		return err
+	}
+	return s.redisClient.Set(ctx, s.cacheKeyBookList(), data, 5*time.Minute).Err()
+}
+
+func (s *Server) getCachedBook(ctx context.Context, id int) (*pb.Book, bool, error) {
+	if s.redisClient == nil {
+		return nil, false, nil
+	}
+	data, err := s.redisClient.Get(ctx, s.cacheKeyBook(id)).Bytes()
+	if err == redis.Nil {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	var book pb.Book
+	if err := json.Unmarshal(data, &book); err != nil {
+		return nil, false, err
+	}
+	return &book, true, nil
+}
+
+func (s *Server) setCachedBook(ctx context.Context, id int, book *pb.Book) error {
+	if s.redisClient == nil {
+		return nil
+	}
+	data, err := json.Marshal(book)
+	if err != nil {
+		return err
+	}
+	return s.redisClient.Set(ctx, s.cacheKeyBook(id), data, 5*time.Minute).Err()
+}
+
+func (s *Server) invalidateBookCache(ctx context.Context, id int) error {
+	if s.redisClient == nil {
+		return nil
+	}
+	keys := []string{s.cacheKeyBookList()}
+	if id > 0 {
+		keys = append(keys, s.cacheKeyBook(id))
+	}
+	return s.redisClient.Del(ctx, keys...).Err()
 }
 
 func (s *Server) ensureBorrowWorkers() {
@@ -402,11 +496,22 @@ func (s *Server) booksHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		log.Printf("booksHandler GET request")
+		if books, hit, err := s.getCachedBooks(r.Context()); err != nil {
+			log.Printf("booksHandler GET cache error: %v", err)
+		} else if hit {
+			log.Printf("booksHandler GET returned %d books from cache", len(books))
+			writeJSON(w, books)
+			return
+		}
+
 		books, err := s.Store.ListBooks(r.Context())
 		if err != nil {
 			log.Printf("booksHandler GET ListBooks error: %v", err)
 			http.Error(w, "server error", http.StatusInternalServerError)
 			return
+		}
+		if err := s.setCachedBooks(r.Context(), books); err != nil {
+			log.Printf("booksHandler GET cache set error: %v", err)
 		}
 		log.Printf("booksHandler GET returning %d books", len(books))
 		writeJSON(w, books)
@@ -424,6 +529,9 @@ func (s *Server) booksHandler(w http.ResponseWriter, r *http.Request) {
 				log.Printf("booksHandler POST CreateBook error: %v", err)
 				http.Error(w, "server error", http.StatusInternalServerError)
 				return
+			}
+			if err := s.invalidateBookCache(r.Context(), int(b.Id)); err != nil {
+				log.Printf("booksHandler POST cache invalidation error: %v", err)
 			}
 			log.Printf("booksHandler POST created book id=%d title=%s", b.Id, b.Title)
 			writeJSON(w, b)
@@ -446,6 +554,13 @@ func (s *Server) bookByIDHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
+		if b, hit, err := s.getCachedBook(r.Context(), id); err != nil {
+			log.Printf("bookByIDHandler GET cache error: %v", err)
+		} else if hit {
+			log.Printf("bookByIDHandler GET returned book id=%d from cache", id)
+			writeJSON(w, b)
+			return
+		}
 		b, err := s.Store.GetBookByID(r.Context(), id)
 		if err != nil {
 			http.Error(w, "server error", http.StatusInternalServerError)
@@ -454,6 +569,9 @@ func (s *Server) bookByIDHandler(w http.ResponseWriter, r *http.Request) {
 		if b == nil {
 			http.NotFound(w, r)
 			return
+		}
+		if err := s.setCachedBook(r.Context(), id, b); err != nil {
+			log.Printf("bookByIDHandler GET cache set error: %v", err)
 		}
 		writeJSON(w, b)
 	case http.MethodPut:
@@ -468,6 +586,9 @@ func (s *Server) bookByIDHandler(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "server error", http.StatusInternalServerError)
 				return
 			}
+			if err := s.invalidateBookCache(r.Context(), id); err != nil {
+				log.Printf("bookByIDHandler PUT cache invalidation error: %v", err)
+			}
 			writeJSON(w, map[string]string{"status": "ok"})
 		})))
 		adminOnly.ServeHTTP(w, r)
@@ -476,6 +597,9 @@ func (s *Server) bookByIDHandler(w http.ResponseWriter, r *http.Request) {
 			if err := s.Store.DeleteBook(r.Context(), id); err != nil {
 				http.Error(w, "server error", http.StatusInternalServerError)
 				return
+			}
+			if err := s.invalidateBookCache(r.Context(), id); err != nil {
+				log.Printf("bookByIDHandler DELETE cache invalidation error: %v", err)
 			}
 			writeJSON(w, map[string]string{"status": "deleted"})
 		})))

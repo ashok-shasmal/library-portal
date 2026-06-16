@@ -62,6 +62,8 @@ spec:
                   key: POSTGRES_DB
             - name: PAYMENT_SERVICE_ADDRESS
               value: "payment-service:50051"
+            - name: REDIS_ADDRESS
+              value: "redis:6379"
             - name: POD_NAME
               valueFrom:
                 fieldRef:

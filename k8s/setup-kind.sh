@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CLUSTER_NAME="demo"
+CLUSTER_NAME="my-cluster"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
@@ -9,7 +9,7 @@ echo "Cleaning existing kind cluster '$CLUSTER_NAME'..."
 kind delete cluster --name "$CLUSTER_NAME" >/dev/null 2>&1 || true
 
 echo "Creating kind cluster '$CLUSTER_NAME'..."
-kind create cluster --name "$CLUSTER_NAME"
+kind create cluster --name "$CLUSTER_NAME" --config k8s/kind-config.yaml
 
 echo "Building library app Docker image..."
 docker build -t library-app:latest .
@@ -40,11 +40,15 @@ kubectl create secret generic postgres-credentials \
 
 echo "Applying Kubernetes manifests..."
 kubectl apply -f k8s/postgres-statefulset.yaml
+kubectl apply -f k8s/redis-deployment.yaml
 kubectl apply -f k8s/library-app-deployment.yaml
 kubectl apply -f k8s/payment-deployment.yaml
 
 echo "Waiting for PostgreSQL pods to be ready..."
 kubectl wait --for=condition=ready pod -l app=postgres --timeout=180s
+
+echo "Waiting for Redis pods to be ready..."
+kubectl wait --for=condition=ready pod -l app=redis --timeout=180s
 
 echo "Waiting for library-app pods to be ready..."
 kubectl wait --for=condition=ready pod -l app=library-app --timeout=240s

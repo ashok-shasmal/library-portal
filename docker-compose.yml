@@ -33,6 +33,8 @@ services:
     depends_on:
       postgres_db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
       payment_service:
         condition: service_started
     environment:
@@ -42,6 +44,7 @@ services:
       - DB_PASSWORD=ashok123!
       - DB_NAME=library_db
       - PAYMENT_SERVICE_ADDRESS=payment_service:50051
+      - REDIS_ADDRESS=redis:6379
 
   payment_service:
     build:
@@ -55,6 +58,20 @@ services:
     depends_on:
       postgres_db:
         condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    container_name: library_redis
+    networks:
+      - library_network
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
 volumes:
   pgdata: # This ensures your data isn't deleted when the container stops
