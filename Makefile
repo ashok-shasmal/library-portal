@@ -20,7 +20,7 @@ dev-down:
 	-@kubectl delete -f k8s/library-app-deployment.yaml || true
 	-@kubectl delete -f k8s/postgres-statefulset.yaml || true
 	-@kubectl delete secret postgres-credentials || true
-	-@kind delete cluster --name demo || true
+	-@kind delete cluster --name my-cluster || true
 	-@rm -f .library-portal-pf.pid /tmp/library-portal-pf.log || true
 	@echo "dev-down finished"
 
